@@ -2,17 +2,15 @@ package main
 
 import (
 	"encoding/json"
-	"math"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
-	"unsafe"
 
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/mcdb"
 	"github.com/df-mc/goleveldb/leveldb/opt"
-	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,27 +18,36 @@ var pre117 = true
 var outputName = "world-out"
 
 type mapGroup struct {
-	worlds         map[string]*worldMap
-	boundsTotal    protocol.ChunkPos
-	offsetInOutput protocol.ChunkPos
+	Name   string
+	worlds map[string]*worldMap
+	groups map[string]*mapGroup
+
+	boundsTotal      ChunkPos
+	offsetFromParent ChunkPos
 }
 
 type worldMap struct {
+	Name string
 	*mcdb.Provider
-	boundsMin     protocol.ChunkPos
-	boundsMax     protocol.ChunkPos
-	boundsTotal   protocol.ChunkPos
-	offsetInGroup protocol.ChunkPos
+	boundsMin        ChunkPos
+	boundsMax        ChunkPos
+	boundsTotal      ChunkPos
+	offsetFromParent ChunkPos
 }
 
 type worldJson struct {
 	Name   string
-	Size   protocol.ChunkPos
-	Offset protocol.ChunkPos
+	Size   ChunkPos
+	Offset ChunkPos
 }
 
 type groupJson struct {
+	Name   string
 	Worlds map[string]worldJson
+	Groups map[string]groupJson
+
+	Size   ChunkPos
+	Offset ChunkPos
 }
 
 type mapJson struct {
@@ -63,198 +70,283 @@ func (w *worldMap) calcBounds() {
 		}
 	}
 
-	w.boundsTotal = protocol.ChunkPos{
+	w.boundsTotal = ChunkPos{
 		w.boundsMax[0] - w.boundsMin[0] + 1,
 		w.boundsMax[1] - w.boundsMin[1] + 1,
 	}
-	println()
+}
+
+func addWorlds(prov *mcdb.Provider, baseOffset ChunkPos, worlds map[string]*worldMap) error {
+	for _, w := range worlds {
+		var outputOffset = baseOffset.Add(w.offsetFromParent)
+
+		for pos := range w.Provider.Chunks(pre117) {
+			c, exists, err := w.Provider.LoadChunk(pos.P, pos.D)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				panic("doesnt exist!!!")
+			}
+
+			blockNBT, err := w.Provider.LoadBlockNBT(pos.P, pos.D)
+			if err != nil {
+				return err
+			}
+
+			for _, v := range blockNBT {
+				v["x"] = v["x"].(int32) + outputOffset.X()*16
+				v["z"] = v["z"].(int32) + outputOffset.Z()*16
+			}
+
+			entities, err := w.Provider.LoadEntities(pos.P, pos.D, &EntityRegistry{})
+			if err != nil {
+				return err
+			}
+
+			for _, e := range entities {
+				ent := e.(*DummyEntity)
+				entt := ent.T.(*DummyEntityType)
+				entt.NBT["Pos"].([]any)[0] = entt.NBT["Pos"].([]any)[0].(float32) + float32(outputOffset.X()*16)
+				entt.NBT["Pos"].([]any)[2] = entt.NBT["Pos"].([]any)[2].(float32) + float32(outputOffset.Z()*16)
+			}
+
+			var posOut = (world.ChunkPos)(outputOffset.Add(pos.P))
+
+			err = prov.SaveChunk(posOut, c, world.Overworld)
+			if err != nil {
+				return err
+			}
+
+			err = prov.SaveBlockNBT(posOut, blockNBT, world.Overworld)
+			if err != nil {
+				return err
+			}
+
+			err = prov.SaveEntities(posOut, entities, world.Overworld)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func addGroups(prov *mcdb.Provider, baseOffset ChunkPos, groups map[string]*mapGroup) error {
+	for _, group := range groups {
+		if len(group.groups) > 0 {
+			err := addGroups(prov, baseOffset.Add(group.offsetFromParent), group.groups)
+			if err != nil {
+				return err
+			}
+		}
+		err := addWorlds(prov, baseOffset.Add(group.offsetFromParent), group.worlds)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recursiveAddWorld(filepath string, parts []string, groups map[string]*mapGroup) error {
+	groupName := parts[0]
+	group, ok := groups[groupName]
+	if !ok {
+		group = &mapGroup{
+			Name:   groupName,
+			worlds: make(map[string]*worldMap),
+			groups: make(map[string]*mapGroup),
+		}
+		groups[groupName] = group
+	}
+	parts = parts[1:]
+	if len(parts) == 1 {
+		worldName := parts[0]
+
+		stat, err := os.Stat(filepath)
+		if err != nil {
+			return err
+		}
+		if stat.IsDir() {
+			logrus.Warnf("Empty Folder %s", filepath)
+			return nil
+		}
+
+		if path.Ext(filepath) == ".mcworld" {
+			s := path.Join("tmp", filepath)
+			os.MkdirAll(s, 0755)
+			err := UnpackZip(filepath, s)
+			if err != nil {
+				return err
+			}
+			filepath = s
+		} else {
+			return fmt.Errorf("%s is not mcworld", filepath)
+		}
+
+		prov, err := mcdb.New(logrus.StandardLogger(), filepath, opt.DefaultCompression)
+		if err != nil {
+			return err
+		}
+		w := &worldMap{Name: worldName, Provider: prov}
+		w.calcBounds()
+		group.worlds[worldName] = w
+		return nil
+	}
+	return recursiveAddWorld(filepath, parts, group.groups)
+}
+
+func layoutWorld(w *worldMap, offset ChunkPos) {
+	w.offsetFromParent = offset
+}
+
+func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int) {
+	// First, layout the children
+	currentOffset := parentOffset
+	currentRowHeight := 0
+	currentColWidth := 0
+	for _, childGroup := range g.groups {
+		layoutGroup(childGroup, currentOffset, padding)
+		childWidth := int(childGroup.boundsTotal[0])
+		if childWidth > currentColWidth {
+			currentColWidth = childWidth
+		}
+		childHeight := int(childGroup.boundsTotal[1])
+		if childHeight > currentRowHeight {
+			currentRowHeight = childHeight
+		}
+		childGroup.offsetFromParent = currentOffset
+		currentOffset[0] += int32(childWidth)
+	}
+	for _, childWorld := range g.worlds {
+		layoutWorld(childWorld, currentOffset)
+		childWidth := int(childWorld.boundsTotal[0])
+		if childWidth > currentColWidth {
+			currentColWidth = childWidth
+		}
+		childHeight := int(childWorld.boundsTotal[1])
+		if childHeight > currentRowHeight {
+			currentRowHeight = childHeight
+		}
+		childWorld.offsetFromParent = currentOffset
+		currentOffset[0] += int32(childWidth + padding)
+	}
+
+	// Then, calculate the size and position of this group based on its children
+	g.boundsTotal = currentOffset.Sub(parentOffset)
 }
 
 func main() {
-	worldPaths, err := filepath.Glob("inputs/**/*.mcworld")
+	os.RemoveAll("tmp")
+	os.RemoveAll(outputName)
+
+	worldPaths, err := filepath.Glob("inputs/**/*")
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
-	os.RemoveAll("tmp")
-	os.RemoveAll(outputName)
-
-	var worldGroups = map[string]mapGroup{}
+	// load
+	var worldGroups = map[string]*mapGroup{}
 	for _, v := range worldPaths {
 		v = filepath.ToSlash(v)
 		p := strings.Split(v, ".")
 		parts := strings.Split(p[0], "/")[1:]
-		groupName := parts[0]
-		mapName := parts[1]
-
-		s := path.Join("tmp", mapName)
-		err := UnpackZip(v, s)
+		err = recursiveAddWorld(v, parts, worldGroups)
 		if err != nil {
 			logrus.Fatal(err)
 		}
+	}
+	root := &mapGroup{groups: worldGroups}
+	layoutGroup(root, ChunkPos{}, 80)
 
-		prov, err := mcdb.New(logrus.StandardLogger(), s, opt.DefaultCompression)
+	{ // output world
+		providerOut, err := mcdb.New(logrus.StandardLogger(), outputName, opt.DefaultCompression)
 		if err != nil {
 			logrus.Fatal(err)
 		}
-
-		if _, ok := worldGroups[groupName]; !ok {
-			worldGroups[groupName] = mapGroup{
-				worlds: make(map[string]*worldMap),
-			}
+		err = addGroups(providerOut, ChunkPos{}, worldGroups)
+		if err != nil {
+			logrus.Fatal(err)
 		}
-
-		w := &worldMap{Provider: prov}
-		w.calcBounds()
-		worldGroups[groupName].worlds[mapName] = w
-	}
-
-	var maxGroupSize protocol.ChunkPos
-	for _, group := range worldGroups {
-		var maxWorldSize protocol.ChunkPos
-		for _, world := range group.worlds {
-			if world.boundsTotal.X() > maxWorldSize.X() {
-				maxWorldSize[0] = world.boundsTotal.X()
-			}
-			if world.boundsTotal.Z() > maxWorldSize.Z() {
-				maxWorldSize[1] = world.boundsTotal.Z()
-			}
+		providerOut.SaveSettings(&world.Settings{
+			Name: "world",
+		})
+		err = providerOut.Close()
+		if err != nil {
+			logrus.Fatal(err)
 		}
-		// 80 chunks of padding
-		maxWorldSize[0] += 80
-		maxWorldSize[1] += 80
-
-		worldsSideLength := int(math.Ceil(math.Sqrt(float64(len(group.worlds)))))
-		group.boundsTotal[0] = int32(worldsSideLength) * maxWorldSize.X()
-		group.boundsTotal[1] = int32(worldsSideLength) * maxWorldSize.Z()
-
-		i := 0
-		for _, world := range group.worlds {
-			row := i % worldsSideLength
-			column := i / worldsSideLength
-			world.offsetInGroup[0] = int32(column) * maxWorldSize.X()
-			world.offsetInGroup[1] = int32(row) * maxWorldSize.Z()
-			i += 1
-		}
-
-		if group.boundsTotal.X() > maxGroupSize.X() {
-			maxGroupSize[0] = group.boundsTotal.X()
-		}
-		if group.boundsTotal.Z() > maxGroupSize.Z() {
-			maxGroupSize[1] = group.boundsTotal.Z()
+		err = ZipFolder("world.mcworld", outputName)
+		if err != nil {
+			logrus.Fatal(err)
 		}
 	}
 
-	groupsSideLength := int(math.Ceil(math.Sqrt(float64(len(worldGroups)))))
-	i := 0
-	for _, group := range worldGroups {
-		row := i % groupsSideLength
-		column := i / groupsSideLength
-		group.offsetInOutput[0] = int32(column) * maxGroupSize.X()
-		group.offsetInOutput[1] = int32(row) * maxGroupSize.Z()
-		i += 1
-	}
-
-	providerOut, err := mcdb.New(logrus.StandardLogger(), outputName, opt.DefaultCompression)
+	err = writeGroupToJSON(root, "map.json")
 	if err != nil {
 		logrus.Fatal(err)
 	}
+}
 
-	for _, group := range worldGroups {
-		for _, w := range group.worlds {
-			var outputOffset = protocol.ChunkPos{
-				group.offsetInOutput.X() + w.offsetInGroup.X(),
-				group.offsetInOutput.Z() + w.offsetInGroup.Z(),
-			}
-
-			for pos := range w.Provider.Chunks(pre117) {
-				c, exists, err := w.Provider.LoadChunk(pos.P, pos.D)
-				if err != nil {
-					logrus.Fatal(err)
-				}
-				if !exists {
-					panic("doesnt exist!!!")
-				}
-
-				blockNBT, err := w.Provider.LoadBlockNBT(pos.P, pos.D)
-				if err != nil {
-					logrus.Fatal(err)
-				}
-
-				for _, v := range blockNBT {
-					v["x"] = v["x"].(int32) + outputOffset.X()*16
-					v["z"] = v["z"].(int32) + outputOffset.Z()*16
-				}
-
-				entities, err := w.Provider.LoadEntities(pos.P, pos.D, *(*world.EntityRegistry)(unsafe.Pointer(&EntityRegistry{})))
-				if err != nil {
-					logrus.Fatal(err)
-				}
-
-				// TODO OFFSET ENTITIES
-
-				var posOut = world.ChunkPos{
-					outputOffset.X() + pos.P.X(),
-					outputOffset.Z() + pos.P.Z(),
-				}
-
-				err = providerOut.SaveChunk(posOut, c, world.Overworld)
-				if err != nil {
-					logrus.Fatal(err)
-				}
-
-				err = providerOut.SaveBlockNBT(posOut, blockNBT, world.Overworld)
-				if err != nil {
-					logrus.Fatal(err)
-				}
-
-				err = providerOut.SaveEntities(posOut, entities, world.Overworld)
-				if err != nil {
-					logrus.Fatal(err)
-				}
-			}
-		}
-	}
-
-	providerOut.SaveSettings(&world.Settings{
-		Name: "world",
-	})
-	err = providerOut.Close()
-	if err != nil {
-		logrus.Fatal(err)
-	}
-
-	err = ZipFolder("world.mcworld", outputName)
-	if err != nil {
-		logrus.Fatal(err)
-	}
-
-	f, err := os.Create("map.json")
-	if err != nil {
-		logrus.Fatal(err)
-	}
-
-	m := mapJson{
+func writeGroupToJSON(rootGroup *mapGroup, filename string) error {
+	// Create a mapJson instance to hold the root group data
+	mapData := mapJson{
 		Groups: make(map[string]groupJson),
 	}
 
-	for k, mg := range worldGroups {
-		m.Groups[k] = groupJson{
-			Worlds: make(map[string]worldJson),
-		}
-		for k2, wm := range mg.worlds {
-			m.Groups[k].Worlds[k2] = worldJson{
-				Name: k2,
-				Size: wm.boundsTotal,
-				Offset: protocol.ChunkPos{
-					mg.offsetInOutput[0] + wm.offsetInGroup[0],
-					mg.offsetInOutput[1] + wm.offsetInGroup[1],
-				},
-			}
-		}
+	// Convert the root group and its children to JSON data
+	groupData := groupToJSON(rootGroup)
+
+	// Add the root group JSON data to the mapJson instance
+	mapData.Groups["root"] = groupData
+
+	// Encode the mapJson instance as JSON and write it to a file
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(mapData); err != nil {
+		return err
 	}
 
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "\t")
-	enc.Encode(m)
+	return nil
+}
+
+func groupToJSON(g *mapGroup) groupJson {
+	// Create a groupJson instance to hold the group data
+	groupData := groupJson{
+		Name:   g.Name,
+		Worlds: make(map[string]worldJson),
+		Groups: make(map[string]groupJson),
+		Size:   g.boundsTotal,
+		Offset: g.offsetFromParent,
+	}
+
+	// Convert the child worlds to JSON data and add them to the groupJson instance
+	for name, world := range g.worlds {
+		worldData := worldToJSON(world)
+		groupData.Worlds[name] = worldData
+	}
+
+	// Convert the child groups to JSON data and add them to the groupJson instance
+	for name, childGroup := range g.groups {
+		childData := groupToJSON(childGroup)
+		groupData.Groups[name] = childData
+	}
+
+	return groupData
+}
+
+func worldToJSON(w *worldMap) worldJson {
+	// Create a worldJson instance to hold the world data
+	worldData := worldJson{
+		Name:   w.Name,
+		Size:   w.boundsTotal,
+		Offset: w.offsetFromParent,
+	}
+
+	return worldData
 }

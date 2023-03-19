@@ -2,7 +2,7 @@ module world-merger
 
 go 1.20
 
-replace github.com/df-mc/dragonfly => github.com/olebeck/dragonfly v0.9.3-4
+replace github.com/df-mc/dragonfly => github.com/olebeck/dragonfly v0.9.3-5
 
 require (
 	github.com/df-mc/dragonfly v0.9.3

@@ -1,0 +1,5 @@
+inputs/
+tmp/
+world-out/
+*.mcworld
+map.json

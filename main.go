@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/df-mc/dragonfly/server/world"
@@ -58,9 +59,9 @@ type worldMap struct {
 }
 
 type worldJson struct {
-	Name   string
-	Size   ChunkPos
-	Offset ChunkPos
+	Name           string
+	Size           ChunkPos
+	OffsetAbsolute ChunkPos
 }
 
 type groupJson struct {
@@ -68,8 +69,8 @@ type groupJson struct {
 	Worlds map[string]worldJson
 	Groups map[string]groupJson
 
-	Size   ChunkPos
-	Offset ChunkPos
+	Size           ChunkPos
+	OffsetAbsolute ChunkPos
 }
 
 type mapJson struct {
@@ -274,7 +275,7 @@ func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int32) {
 
 	currentOffset := ChunkPos(parentOffset)
 	var row, col int32
-	var rowHeight int32
+	var rowHeight int32 = maxHeight
 	for _, child := range children {
 		_, is_world := child.(*worldMap)
 		cb := child.BoundsTotal()
@@ -287,9 +288,6 @@ func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int32) {
 		if is_world {
 			childHeight += padding
 		}
-		if childHeight > rowHeight {
-			rowHeight = childHeight
-		}
 
 		col++
 		if col == g.numCols {
@@ -300,9 +298,8 @@ func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int32) {
 				currentOffset[1] += padding
 			}
 			currentOffset[0] = parentOffset[0]
-			rowHeight = 0
+			g.rowHeights = append(g.rowHeights, rowHeight)
 		} else {
-			currentOffset[0] += cb.X()
 			if is_world {
 				currentOffset[0] += padding
 			}
@@ -318,6 +315,7 @@ func main() {
 	if err != nil {
 		logrus.Fatal(err)
 	}
+	sort.Strings(worldPaths)
 
 	// load
 	var worldGroups = map[string]*mapGroup{}
@@ -333,7 +331,7 @@ func main() {
 
 	logrus.Info("Laying Out")
 	root := &mapGroup{groups: worldGroups}
-	layoutGroup(root, ChunkPos{}, 80)
+	layoutGroup(root, ChunkPos{}, 0)
 
 	// center root
 	root.offsetFromParent = root.offsetFromParent.Sub(root.BoundsTotal().Div(2))
@@ -374,7 +372,7 @@ func writeGroupToJSON(rootGroup *mapGroup, filename string) error {
 	}
 
 	// Convert the root group and its children to JSON data
-	groupData := groupToJSON(rootGroup)
+	groupData := groupToJSON(rootGroup, ChunkPos{})
 
 	// Add the root group JSON data to the mapJson instance
 	mapData.Groups["root"] = groupData
@@ -395,37 +393,38 @@ func writeGroupToJSON(rootGroup *mapGroup, filename string) error {
 	return nil
 }
 
-func groupToJSON(g *mapGroup) groupJson {
+func groupToJSON(g *mapGroup, base ChunkPos) groupJson {
+	offsetAbsolute := base.Add(g.offsetFromParent)
 	// Create a groupJson instance to hold the group data
 	groupData := groupJson{
-		Name:   g.Name,
-		Worlds: make(map[string]worldJson),
-		Groups: make(map[string]groupJson),
-		Size:   g.BoundsTotal(),
-		Offset: g.offsetFromParent,
+		Name:           g.Name,
+		Worlds:         make(map[string]worldJson),
+		Groups:         make(map[string]groupJson),
+		Size:           g.BoundsTotal(),
+		OffsetAbsolute: offsetAbsolute,
 	}
 
 	// Convert the child worlds to JSON data and add them to the groupJson instance
 	for name, world := range g.worlds {
-		worldData := worldToJSON(world)
+		worldData := worldToJSON(world, offsetAbsolute)
 		groupData.Worlds[name] = worldData
 	}
 
 	// Convert the child groups to JSON data and add them to the groupJson instance
 	for name, childGroup := range g.groups {
-		childData := groupToJSON(childGroup)
+		childData := groupToJSON(childGroup, offsetAbsolute)
 		groupData.Groups[name] = childData
 	}
 
 	return groupData
 }
 
-func worldToJSON(w *worldMap) worldJson {
+func worldToJSON(w *worldMap, base ChunkPos) worldJson {
 	// Create a worldJson instance to hold the world data
 	worldData := worldJson{
-		Name:   w.Name,
-		Size:   w.BoundsTotal(),
-		Offset: w.offsetFromParent,
+		Name:           w.Name,
+		Size:           w.BoundsTotal(),
+		OffsetAbsolute: base.Add(w.offsetFromParent),
 	}
 
 	return worldData

@@ -11,15 +11,20 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func UnpackZip(filename, unpackFolder string) error {
+func UnpackZip(filename, unpackFolder string, filteFn func(string) bool) error {
 	f, err := os.Open(filename)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 	s, _ := f.Stat()
 	zr, _ := zip.NewReader(f, s.Size())
 	for _, srcFile := range zr.File {
 		srcName := filepath.ToSlash(srcFile.Name)
+		if !filteFn(srcName) {
+			continue
+		}
+
 		outPath := path.Join(unpackFolder, srcName)
 		if srcFile.Mode().IsDir() {
 			os.Mkdir(outPath, 0o755)
@@ -27,7 +32,10 @@ func UnpackZip(filename, unpackFolder string) error {
 			os.MkdirAll(path.Dir(outPath), 0o755)
 			fr, _ := srcFile.Open()
 			f, _ := os.Create(path.Join(unpackFolder, srcName))
+			f.Chmod(0775)
 			io.Copy(f, fr)
+			fr.Close()
+			f.Close()
 		}
 	}
 	return nil
@@ -78,5 +86,11 @@ func (pos ChunkPos) Add(pos2 [2]int32) (out ChunkPos) {
 func (pos ChunkPos) Sub(pos2 [2]int32) (out ChunkPos) {
 	out[0] = pos[0] - pos2[0]
 	out[1] = pos[1] - pos2[1]
+	return
+}
+
+func (pos ChunkPos) Div(d int32) (out ChunkPos) {
+	out[0] = pos[0] / d
+	out[1] = pos[1] / d
 	return
 }

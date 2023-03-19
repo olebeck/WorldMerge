@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,13 +18,35 @@ import (
 var pre117 = true
 var outputName = "world-out"
 
+type layoutItem interface {
+	BoundsTotal() ChunkPos
+	setOffset(ChunkPos)
+}
+
 type mapGroup struct {
 	Name   string
 	worlds map[string]*worldMap
 	groups map[string]*mapGroup
 
-	boundsTotal      ChunkPos
+	numCols, colWidth int32
+	rowHeights        []int32
+
 	offsetFromParent ChunkPos
+}
+
+func (g *mapGroup) BoundsTotal() ChunkPos {
+	var z int32
+	for _, v := range g.rowHeights {
+		z += v
+	}
+	return ChunkPos{
+		int32(g.numCols) * g.colWidth,
+		z,
+	}
+}
+
+func (g *mapGroup) setOffset(p ChunkPos) {
+	g.offsetFromParent = p
 }
 
 type worldMap struct {
@@ -31,7 +54,6 @@ type worldMap struct {
 	*mcdb.Provider
 	boundsMin        ChunkPos
 	boundsMax        ChunkPos
-	boundsTotal      ChunkPos
 	offsetFromParent ChunkPos
 }
 
@@ -54,6 +76,17 @@ type mapJson struct {
 	Groups map[string]groupJson
 }
 
+func (w *worldMap) BoundsTotal() ChunkPos {
+	return ChunkPos{
+		w.boundsMax[0] - w.boundsMin[0] + 1,
+		w.boundsMax[1] - w.boundsMin[1] + 1,
+	}
+}
+
+func (w *worldMap) setOffset(p ChunkPos) {
+	w.offsetFromParent = p
+}
+
 func (w *worldMap) calcBounds() {
 	for pos := range w.Provider.Chunks(pre117) {
 		if w.boundsMin[0] > pos.P.X() {
@@ -69,15 +102,11 @@ func (w *worldMap) calcBounds() {
 			w.boundsMax[1] = pos.P.Z()
 		}
 	}
-
-	w.boundsTotal = ChunkPos{
-		w.boundsMax[0] - w.boundsMin[0] + 1,
-		w.boundsMax[1] - w.boundsMin[1] + 1,
-	}
 }
 
 func addWorlds(prov *mcdb.Provider, baseOffset ChunkPos, worlds map[string]*worldMap) error {
 	for _, w := range worlds {
+		logrus.Infof("Adding %s", w.Name)
 		var outputOffset = baseOffset.Add(w.offsetFromParent)
 
 		for pos := range w.Provider.Chunks(pre117) {
@@ -175,7 +204,12 @@ func recursiveAddWorld(filepath string, parts []string, groups map[string]*mapGr
 		if path.Ext(filepath) == ".mcworld" {
 			s := path.Join("tmp", filepath)
 			os.MkdirAll(s, 0755)
-			err := UnpackZip(filepath, s)
+			err := UnpackZip(filepath, s, func(s string) bool {
+				is_behaviors := strings.Contains(s, "behavior_packs")
+				is_resources := strings.Contains(s, "resource_packs")
+				is_lock := s == "db/LOCK"
+				return !is_resources && !is_behaviors && !is_lock
+			})
 			if err != nil {
 				return err
 			}
@@ -184,6 +218,7 @@ func recursiveAddWorld(filepath string, parts []string, groups map[string]*mapGr
 			return fmt.Errorf("%s is not mcworld", filepath)
 		}
 
+		logrus.Infof("Loading %s", filepath)
 		prov, err := mcdb.New(logrus.StandardLogger(), filepath, opt.DefaultCompression)
 		if err != nil {
 			return err
@@ -200,40 +235,79 @@ func layoutWorld(w *worldMap, offset ChunkPos) {
 	w.offsetFromParent = offset
 }
 
-func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int) {
+func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int32) {
 	// First, layout the children
-	currentOffset := parentOffset
-	currentRowHeight := 0
-	currentColWidth := 0
+	var children []layoutItem
 	for _, childGroup := range g.groups {
-		layoutGroup(childGroup, currentOffset, padding)
-		childWidth := int(childGroup.boundsTotal[0])
-		if childWidth > currentColWidth {
-			currentColWidth = childWidth
-		}
-		childHeight := int(childGroup.boundsTotal[1])
-		if childHeight > currentRowHeight {
-			currentRowHeight = childHeight
-		}
-		childGroup.offsetFromParent = currentOffset
-		currentOffset[0] += int32(childWidth)
+		layoutGroup(childGroup, parentOffset, padding)
+		children = append(children, childGroup)
 	}
 	for _, childWorld := range g.worlds {
-		layoutWorld(childWorld, currentOffset)
-		childWidth := int(childWorld.boundsTotal[0])
-		if childWidth > currentColWidth {
-			currentColWidth = childWidth
-		}
-		childHeight := int(childWorld.boundsTotal[1])
-		if childHeight > currentRowHeight {
-			currentRowHeight = childHeight
-		}
-		childWorld.offsetFromParent = currentOffset
-		currentOffset[0] += int32(childWidth + padding)
+		layoutWorld(childWorld, parentOffset)
+		children = append(children, childWorld)
 	}
 
 	// Then, calculate the size and position of this group based on its children
-	g.boundsTotal = currentOffset.Sub(parentOffset)
+	var maxWidth, maxHeight int32
+	for _, child := range children {
+		cb := child.BoundsTotal()
+		if cb[0] > maxWidth {
+			maxWidth = cb[0]
+		}
+		if cb[1] > maxHeight {
+			maxHeight = cb[1]
+		}
+	}
+
+	a := math.Sqrt(float64(len(g.groups) + len(g.worlds)))
+
+	g.numCols = int32(math.Ceil(a))
+	if g.numCols == 0 {
+		g.numCols = 1
+	}
+	rows := int32(math.Floor(a))
+	_ = rows
+	g.colWidth = int32(maxWidth)
+	if a > 0 {
+		g.colWidth += padding
+	}
+
+	currentOffset := ChunkPos(parentOffset)
+	var row, col int32
+	var rowHeight int32
+	for _, child := range children {
+		_, is_world := child.(*worldMap)
+		cb := child.BoundsTotal()
+		child.setOffset(ChunkPos{
+			currentOffset.X() + col*g.colWidth,
+			currentOffset.Z(),
+		})
+
+		childHeight := cb.Z()
+		if is_world {
+			childHeight += padding
+		}
+		if childHeight > rowHeight {
+			rowHeight = childHeight
+		}
+
+		col++
+		if col == g.numCols {
+			col = 0
+			row++
+			currentOffset[1] += rowHeight
+			if is_world {
+				currentOffset[1] += padding
+			}
+			currentOffset[0] = parentOffset[0]
+			rowHeight = 0
+		} else {
+			currentOffset[0] += cb.X()
+			if is_world {
+				currentOffset[0] += padding
+			}
+		}
+	}
 }
 
 func main() {
@@ -256,9 +330,15 @@ func main() {
 			logrus.Fatal(err)
 		}
 	}
+
+	logrus.Info("Laying Out")
 	root := &mapGroup{groups: worldGroups}
 	layoutGroup(root, ChunkPos{}, 80)
 
+	// center root
+	root.offsetFromParent = root.offsetFromParent.Sub(root.BoundsTotal().Div(2))
+
+	logrus.Info("Generating Output World")
 	{ // output world
 		providerOut, err := mcdb.New(logrus.StandardLogger(), outputName, opt.DefaultCompression)
 		if err != nil {
@@ -321,7 +401,7 @@ func groupToJSON(g *mapGroup) groupJson {
 		Name:   g.Name,
 		Worlds: make(map[string]worldJson),
 		Groups: make(map[string]groupJson),
-		Size:   g.boundsTotal,
+		Size:   g.BoundsTotal(),
 		Offset: g.offsetFromParent,
 	}
 
@@ -344,7 +424,7 @@ func worldToJSON(w *worldMap) worldJson {
 	// Create a worldJson instance to hold the world data
 	worldData := worldJson{
 		Name:   w.Name,
-		Size:   w.boundsTotal,
+		Size:   w.BoundsTotal(),
 		Offset: w.offsetFromParent,
 	}
 

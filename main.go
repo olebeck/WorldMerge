@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -9,15 +10,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/mcdb"
-	"github.com/df-mc/goleveldb/leveldb/opt"
+	"github.com/df-mc/goleveldb/leveldb"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/semaphore"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
-var pre117 = true
 var outputName = "world-out"
+
+var sem = semaphore.NewWeighted(30)
 
 type layoutItem interface {
 	BoundsTotal() ChunkPos
@@ -52,7 +59,7 @@ func (g *mapGroup) setOffset(p ChunkPos) {
 
 type worldMap struct {
 	Name string
-	*mcdb.Provider
+	*mcdb.DB
 	boundsMin        ChunkPos
 	boundsMax        ChunkPos
 	offsetFromParent ChunkPos
@@ -89,88 +96,117 @@ func (w *worldMap) setOffset(p ChunkPos) {
 }
 
 func (w *worldMap) calcBounds() {
-	for pos := range w.Provider.Chunks(pre117) {
-		if w.boundsMin[0] > pos.P.X() {
-			w.boundsMin[0] = pos.P.X()
+	it := newChunkIterator(w.DB, nil)
+	for it.Next() {
+		pos := it.Position()
+		if w.boundsMin[0] > pos.X() {
+			w.boundsMin[0] = pos.X()
 		}
-		if w.boundsMin[1] > pos.P.Z() {
-			w.boundsMin[1] = pos.P.Z()
+		if w.boundsMin[1] > pos.Z() {
+			w.boundsMin[1] = pos.Z()
 		}
-		if w.boundsMax[0] < pos.P.X() {
-			w.boundsMax[0] = pos.P.X()
+		if w.boundsMax[0] < pos.X() {
+			w.boundsMax[0] = pos.X()
 		}
-		if w.boundsMax[1] < pos.P.Z() {
-			w.boundsMax[1] = pos.P.Z()
+		if w.boundsMax[1] < pos.Z() {
+			w.boundsMax[1] = pos.Z()
 		}
 	}
+	it.Release()
 }
 
-func addWorlds(prov *mcdb.Provider, baseOffset ChunkPos, worlds map[string]*worldMap) error {
+var worldsAdded = 0
+var worldsTotal = 0
+
+func addWorlds(wg *sync.WaitGroup, dbOutput *mcdb.DB, baseOffset ChunkPos, worlds map[string]*worldMap) error {
 	for _, w := range worlds {
-		logrus.Infof("Adding %s", w.Name)
-		var outputOffset = baseOffset.Add(w.offsetFromParent)
+		logrus.Infof("Adding %s %d/%d", w.Name, worldsAdded, worldsTotal)
+		worldsAdded++
 
-		for pos := range w.Provider.Chunks(pre117) {
-			c, exists, err := w.Provider.LoadChunk(pos.P, pos.D)
+		wg.Add(1)
+		sem.Acquire(context.Background(), 1)
+		go func(w *worldMap) {
+			defer wg.Done()
+			defer sem.Release(1)
+			var outputOffset = baseOffset.Add(w.offsetFromParent)
+
+			it := newChunkIterator(w.DB, nil)
+			defer it.Release()
+			for it.Next() {
+			}
+
+			b := leveldb.MakeBatch(len(it.seen) * 16)
+			for k := range it.seen {
+				pos := k.pos
+				dim := k.dim
+				var posOut = (world.ChunkPos)(outputOffset.Add(pos))
+
+				err := copyChunk(w.DB, pos, dim, b, posOut)
+				if err != nil {
+					logrus.Error(err)
+					return
+				}
+
+				blockNBT, err := w.DB.LoadBlockNBT(pos, dim)
+				if err != nil {
+					logrus.Error(err)
+					return
+				}
+				for _, v := range blockNBT {
+					x, ok := v["x"].(int32)
+					if !ok {
+						continue
+					}
+					z, ok := v["z"].(int32)
+					if !ok {
+						continue
+					}
+					v["x"] = x + outputOffset.X()*16
+					v["z"] = z + outputOffset.Z()*16
+				}
+				err = dbOutput.SaveBlockNBT(posOut, blockNBT, world.Overworld)
+				if err != nil {
+					logrus.Error(err)
+					return
+				}
+
+				entities, err := w.DB.LoadEntities(pos, dim, &EntityRegistry{})
+				if err != nil {
+					logrus.Error(err)
+					return
+				}
+				for _, e := range entities {
+					ent := e.(*DummyEntity)
+					entt := ent.T.(*DummyEntityType)
+					entt.NBT["Pos"].([]any)[0] = entt.NBT["Pos"].([]any)[0].(float32) + float32(outputOffset.X()*16)
+					entt.NBT["Pos"].([]any)[2] = entt.NBT["Pos"].([]any)[2].(float32) + float32(outputOffset.Z()*16)
+				}
+				err = dbOutput.SaveEntities(posOut, entities, world.Overworld)
+				if err != nil {
+					logrus.Error(err)
+					return
+				}
+			}
+
+			err := dbOutput.LDB().Write(b, nil)
 			if err != nil {
-				return err
+				logrus.Error(err)
+				return
 			}
-			if !exists {
-				panic("doesnt exist!!!")
-			}
-
-			blockNBT, err := w.Provider.LoadBlockNBT(pos.P, pos.D)
-			if err != nil {
-				return err
-			}
-
-			for _, v := range blockNBT {
-				v["x"] = v["x"].(int32) + outputOffset.X()*16
-				v["z"] = v["z"].(int32) + outputOffset.Z()*16
-			}
-
-			entities, err := w.Provider.LoadEntities(pos.P, pos.D, &EntityRegistry{})
-			if err != nil {
-				return err
-			}
-
-			for _, e := range entities {
-				ent := e.(*DummyEntity)
-				entt := ent.T.(*DummyEntityType)
-				entt.NBT["Pos"].([]any)[0] = entt.NBT["Pos"].([]any)[0].(float32) + float32(outputOffset.X()*16)
-				entt.NBT["Pos"].([]any)[2] = entt.NBT["Pos"].([]any)[2].(float32) + float32(outputOffset.Z()*16)
-			}
-
-			var posOut = (world.ChunkPos)(outputOffset.Add(pos.P))
-
-			err = prov.SaveChunk(posOut, c, world.Overworld)
-			if err != nil {
-				return err
-			}
-
-			err = prov.SaveBlockNBT(posOut, blockNBT, world.Overworld)
-			if err != nil {
-				return err
-			}
-
-			err = prov.SaveEntities(posOut, entities, world.Overworld)
-			if err != nil {
-				return err
-			}
-		}
+		}(w)
 	}
 	return nil
 }
 
-func addGroups(prov *mcdb.Provider, baseOffset ChunkPos, groups map[string]*mapGroup) error {
+func addGroups(wg *sync.WaitGroup, dbOutput *mcdb.DB, baseOffset ChunkPos, groups map[string]*mapGroup) error {
 	for _, group := range groups {
 		if len(group.groups) > 0 {
-			err := addGroups(prov, baseOffset.Add(group.offsetFromParent), group.groups)
+			err := addGroups(wg, dbOutput, baseOffset.Add(group.offsetFromParent), group.groups)
 			if err != nil {
 				return err
 			}
 		}
-		err := addWorlds(prov, baseOffset.Add(group.offsetFromParent), group.worlds)
+		err := addWorlds(wg, dbOutput, baseOffset.Add(group.offsetFromParent), group.worlds)
 		if err != nil {
 			return err
 		}
@@ -204,15 +240,17 @@ func recursiveAddWorld(filepath string, parts []string, groups map[string]*mapGr
 
 		if path.Ext(filepath) == ".mcworld" {
 			s := path.Join("tmp", filepath)
-			os.MkdirAll(s, 0755)
-			err := UnpackZip(filepath, s, func(s string) bool {
-				is_behaviors := strings.Contains(s, "behavior_packs")
-				is_resources := strings.Contains(s, "resource_packs")
-				is_lock := s == "db/LOCK"
-				return !is_resources && !is_behaviors && !is_lock
-			})
-			if err != nil {
-				return err
+			if _, err := os.Stat(s); err != nil {
+				os.MkdirAll(s, 0755)
+				err := UnpackZip(filepath, s, func(s string) bool {
+					is_behaviors := strings.Contains(s, "behavior_packs")
+					is_resources := strings.Contains(s, "resource_packs")
+					is_lock := s == "db/LOCK"
+					return !is_resources && !is_behaviors && !is_lock
+				})
+				if err != nil {
+					return err
+				}
 			}
 			filepath = s
 		} else {
@@ -220,13 +258,15 @@ func recursiveAddWorld(filepath string, parts []string, groups map[string]*mapGr
 		}
 
 		logrus.Infof("Loading %s", filepath)
-		prov, err := mcdb.New(logrus.StandardLogger(), filepath, opt.DefaultCompression)
+		db, err := mcdb.New(filepath)
 		if err != nil {
-			return err
+			logrus.Error(err)
+			return nil
 		}
-		w := &worldMap{Name: worldName, Provider: prov}
+		w := &worldMap{Name: worldName, DB: db}
 		w.calcBounds()
 		group.worlds[worldName] = w
+		worldsTotal++
 		return nil
 	}
 	return recursiveAddWorld(filepath, parts, group.groups)
@@ -308,10 +348,15 @@ func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int32) {
 }
 
 func main() {
-	os.RemoveAll("tmp")
+
+	go func() {
+		_ = http.ListenAndServe("127.0.0.1:8081", nil)
+	}()
+
+	//os.RemoveAll("tmp")
 	os.RemoveAll(outputName)
 
-	worldPaths, err := filepath.Glob("inputs/**/*")
+	worldPaths, err := glob("Hive-MC-Archive/Maps/", ".mcworld")
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -338,16 +383,21 @@ func main() {
 
 	logrus.Info("Generating Output World")
 	{ // output world
-		providerOut, err := mcdb.New(logrus.StandardLogger(), outputName, opt.DefaultCompression)
+		providerOut, err := mcdb.New(outputName)
 		if err != nil {
 			logrus.Fatal(err)
 		}
-		err = addGroups(providerOut, ChunkPos{}, worldGroups)
+
+		wg := &sync.WaitGroup{}
+		err = addGroups(wg, providerOut, ChunkPos{}, worldGroups)
 		if err != nil {
 			logrus.Fatal(err)
 		}
+		wg.Wait()
+
 		providerOut.SaveSettings(&world.Settings{
-			Name: "world",
+			Name:            "world",
+			DefaultGameMode: world.GameModeCreative,
 		})
 		err = providerOut.Close()
 		if err != nil {
@@ -363,6 +413,8 @@ func main() {
 	if err != nil {
 		logrus.Fatal(err)
 	}
+
+	logrus.Infof("%d chunks", countChunks)
 }
 
 func writeGroupToJSON(rootGroup *mapGroup, filename string) error {

@@ -11,6 +11,8 @@ github.com/df-mc/dragonfly v0.9.3 h1:7DUW9Rj9gyZ6/4ofONSPfrLlm/1XRuDZyXxN8hKRZP0
 github.com/df-mc/dragonfly v0.9.3/go.mod h1:ODAzVcmM7KvKgPB89hoYndQiVVgTm9FlDXUko1H3YVs=
 github.com/df-mc/goleveldb v1.1.9 h1:ihdosZyy5jkQKrxucTQmN90jq/2lUwQnJZjIYIC/9YU=
 github.com/df-mc/goleveldb v1.1.9/go.mod h1:+NHCup03Sci5q84APIA21z3iPZCuk6m6ABtg4nANCSk=
+github.com/df-mc/worldupgrader v1.0.3 h1:3nbthy6vfSNQZdqHBR+E5Fh3mCeWmCwLtqrYDiPUG5I=
+github.com/df-mc/worldupgrader v1.0.3/go.mod h1:6ybkJ/BV9b0XkcPzcLmvgT9Nv/xgBXdDQTmRhu7b8zQ=
 github.com/fsnotify/fsnotify v1.4.7/go.mod h1:jwhsz4b93w/PPRr/qN1Yymfu8t87LnFCMoQvtojpjFo=
 github.com/go-gl/mathgl v1.0.0 h1:t9DznWJlXxxjeeKLIdovCOVJQk/GzDEL7h/h+Ro2B68=
 github.com/go-gl/mathgl v1.0.0/go.mod h1:yhpkQzEiH9yPyxDUGzkmgScbaBVlhC06qodikEM0ZwQ=
@@ -37,6 +39,12 @@ github.com/olebeck/dragonfly v0.9.3-4 h1:k+ckR7MhqykGWVFiJc2fJitVNSX8XIYU3i/0LcX
 github.com/olebeck/dragonfly v0.9.3-4/go.mod h1:ODAzVcmM7KvKgPB89hoYndQiVVgTm9FlDXUko1H3YVs=
 github.com/olebeck/dragonfly v0.9.3-5 h1:8MUpzKz1UZ0K+DJrywBV6C/ydGMggTxGg1n9VFAZPpI=
 github.com/olebeck/dragonfly v0.9.3-5/go.mod h1:ODAzVcmM7KvKgPB89hoYndQiVVgTm9FlDXUko1H3YVs=
+github.com/olebeck/dragonfly v0.9.4-7 h1:xzSc9U9upx+mxayAHN1MxkD+PStVgqksJ4uls0o3g4w=
+github.com/olebeck/dragonfly v0.9.4-7/go.mod h1:k8OQvjmfj+JbrwQf1qHfMETlFHOp0WJLjILN+QVqh+c=
+github.com/olebeck/dragonfly v0.9.4-8 h1:t3KwOWL1aFiIuOPC67B9HiVvjg2i3Q4LpXMmQ7fOvoE=
+github.com/olebeck/dragonfly v0.9.4-8/go.mod h1:k8OQvjmfj+JbrwQf1qHfMETlFHOp0WJLjILN+QVqh+c=
+github.com/olebeck/dragonfly v0.9.4-9 h1:VgcYFAyEZMo2VSm68fkUZ68iye7xmOWttt6gvjAG6Uw=
+github.com/olebeck/dragonfly v0.9.4-9/go.mod h1:k8OQvjmfj+JbrwQf1qHfMETlFHOp0WJLjILN+QVqh+c=
 github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/ginkgo v1.7.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/gomega v1.4.3/go.mod h1:ex+gbHU/CVuBBDIJjb2X0qEXbFg53c61hWP/1CpauHY=
@@ -49,6 +57,8 @@ github.com/sandertv/go-raknet v1.12.0 h1:olUzZlIJyX/pgj/mrsLCZYjKLNDsYiWdvQ4NIm3
 github.com/sandertv/go-raknet v1.12.0/go.mod h1:Gx+WgZBMQ0V2UoouGoJ8Wj6CDrMBQ4SB2F/ggpl5/+Y=
 github.com/sandertv/gophertunnel v1.27.4 h1:7KAdSmEESLJWQ4CCDI6dlmUvd1NaaTemPG3eN2xH+ww=
 github.com/sandertv/gophertunnel v1.27.4/go.mod h1:ekREo7U9TPHh86kbuPMaWA93NMyWsfVvP/iNT3XhAb8=
+github.com/sandertv/gophertunnel v1.28.1 h1:I2gmAJ3Se+iT0a99rLU3EKLshqFDvCnrT05fUFv9rGk=
+github.com/sandertv/gophertunnel v1.28.1/go.mod h1:ekREo7U9TPHh86kbuPMaWA93NMyWsfVvP/iNT3XhAb8=
 github.com/sirupsen/logrus v1.9.0 h1:trlNQbNUG3OdDrDil03MCb1H2o9nJ1x4/5LYw7byDE0=
 github.com/sirupsen/logrus v1.9.0/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
 github.com/spaolacci/murmur3 v0.0.0-20180118202830-f09979ecbc72/go.mod h1:JwIasOWyU6f++ZhiEuf87xNszmSA2myDM2Kzu9HwQUA=
@@ -79,6 +89,8 @@ golang.org/x/oauth2 v0.4.0/go.mod h1:RznEsdpjGAINPTOF0UH/t+xJ75L18YO3Ho6Pyn+uRec
 golang.org/x/sync v0.0.0-20180314180146-1d60e4601c6f/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.1.0 h1:wsuoTGHzEhffawBOhz5CYhcrV4IdKZbEyZjBMuTp12o=
+golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sys v0.0.0-20180909124046-d0be0721c37e/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
 golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
 golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=

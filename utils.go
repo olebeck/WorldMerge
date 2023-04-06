@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"compress/flate"
 	"io"
 	"io/fs"
 	"os"
@@ -47,6 +48,12 @@ func ZipFolder(filename, folder string) error {
 		logrus.Fatal(err)
 	}
 	zw := zip.NewWriter(f)
+
+	// Register a custom Deflate compressor.
+	zw.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
+		return flate.NewWriter(out, flate.NoCompression)
+	})
+
 	err = filepath.WalkDir(folder, func(path string, d fs.DirEntry, err error) error {
 		if !d.Type().IsDir() {
 			rel := path[len(folder)+1:]
@@ -93,4 +100,15 @@ func (pos ChunkPos) Div(d int32) (out ChunkPos) {
 	out[0] = pos[0] / d
 	out[1] = pos[1] / d
 	return
+}
+
+func glob(dir string, ext string) ([]string, error) {
+	files := []string{}
+	err := filepath.Walk(dir, func(path string, f os.FileInfo, err error) error {
+		if filepath.Ext(path) == ext {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files, err
 }

@@ -55,8 +55,8 @@ func (g *mapGroup) setOffset(p ChunkPos) {
 }
 
 type worldMap struct {
-	Name string
-	*mcdb.DB
+	Name             string
+	filepath         string
 	boundsMin        ChunkPos
 	boundsMax        ChunkPos
 	offsetFromParent ChunkPos
@@ -92,8 +92,8 @@ func (w *worldMap) setOffset(p ChunkPos) {
 	w.offsetFromParent = p
 }
 
-func (w *worldMap) calcBounds() {
-	it := newChunkIterator(w.DB, nil)
+func (w *worldMap) calcBounds(db *mcdb.DB) {
+	it := newChunkIterator(db, nil)
 	for it.Next() {
 		pos := it.Position()
 		if w.boundsMin[0] > pos.X() {
@@ -127,7 +127,13 @@ func addWorlds(wg *sync.WaitGroup, dbOutput *mcdb.DB, baseOffset ChunkPos, world
 			defer sem.Release(1)
 			var outputOffset = baseOffset.Add(w.offsetFromParent)
 
-			it := newChunkIterator(w.DB, nil)
+			db, err := mcdb.New(w.filepath)
+			if err != nil {
+				logrus.Error(err)
+				return
+			}
+
+			it := newChunkIterator(db, nil)
 			defer it.Release()
 			for it.Next() {
 			}
@@ -138,13 +144,13 @@ func addWorlds(wg *sync.WaitGroup, dbOutput *mcdb.DB, baseOffset ChunkPos, world
 				dim := k.dim
 				var posOut = (world.ChunkPos)(outputOffset.Add(pos))
 
-				err := copyChunk(w.DB, pos, dim, b, posOut)
+				err := copyChunk(db, pos, dim, b, posOut)
 				if err != nil {
 					logrus.Error(err)
 					return
 				}
 
-				blockNBT, err := w.DB.LoadBlockNBT(pos, dim)
+				blockNBT, err := db.LoadBlockNBT(pos, dim)
 				if err != nil {
 					logrus.Error(err)
 					return
@@ -167,7 +173,7 @@ func addWorlds(wg *sync.WaitGroup, dbOutput *mcdb.DB, baseOffset ChunkPos, world
 					return
 				}
 
-				entities, err := w.DB.LoadEntities(pos, dim, &EntityRegistry{})
+				entities, err := db.LoadEntities(pos, dim, &EntityRegistry{})
 				if err != nil {
 					logrus.Error(err)
 					return
@@ -185,7 +191,7 @@ func addWorlds(wg *sync.WaitGroup, dbOutput *mcdb.DB, baseOffset ChunkPos, world
 				}
 			}
 
-			err := dbOutput.LDB().Write(b, nil)
+			err = dbOutput.LDB().Write(b, nil)
 			if err != nil {
 				logrus.Error(err)
 				return
@@ -253,14 +259,15 @@ func recursiveAddWorld(filepath string, parts []string, groups map[string]*mapGr
 			return fmt.Errorf("%s is not mcworld", filepath)
 		}
 
-		logrus.Infof("Loading %s", filepath)
+		logrus.Infof("Getting Bounds %s", filepath)
 		db, err := mcdb.New(filepath)
 		if err != nil {
 			logrus.Error(err)
 			return nil
 		}
-		w := &worldMap{Name: worldName, DB: db}
-		w.calcBounds()
+		w := &worldMap{Name: worldName, filepath: filepath}
+		w.calcBounds(db)
+		db.Close()
 		group.worlds[worldName] = w
 		worldsTotal++
 		return nil
@@ -344,14 +351,14 @@ func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int32) {
 }
 
 func main() {
-	if len(os.Args) > 2 {
+	if len(os.Args) < 2 {
 		logrus.Error("Usage: WorldMerge.exe <input folder> [output-name]")
 		return
 	}
 	inputFolder := os.Args[1]
 
 	outputName := "world-out"
-	if len(os.Args) > 3 {
+	if len(os.Args) >= 3 {
 		outputName = os.Args[2]
 	}
 	os.RemoveAll(outputName)

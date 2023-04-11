@@ -17,12 +17,7 @@ import (
 	"github.com/df-mc/goleveldb/leveldb"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/semaphore"
-
-	"net/http"
-	_ "net/http/pprof"
 )
-
-var outputName = "world-out"
 
 var sem = semaphore.NewWeighted(30)
 
@@ -245,8 +240,7 @@ func recursiveAddWorld(filepath string, parts []string, groups map[string]*mapGr
 				err := UnpackZip(filepath, s, func(s string) bool {
 					is_behaviors := strings.Contains(s, "behavior_packs")
 					is_resources := strings.Contains(s, "resource_packs")
-					is_lock := s == "db/LOCK"
-					return !is_resources && !is_behaviors && !is_lock
+					return !is_resources && !is_behaviors
 				})
 				if err != nil {
 					return err
@@ -348,15 +342,19 @@ func layoutGroup(g *mapGroup, parentOffset ChunkPos, padding int32) {
 }
 
 func main() {
+	if len(os.Args) > 2 {
+		logrus.Error("Usage: WorldMerge.exe <input folder> [output-name]")
+		return
+	}
+	inputFolder := os.Args[1]
 
-	go func() {
-		_ = http.ListenAndServe("127.0.0.1:8081", nil)
-	}()
-
-	//os.RemoveAll("tmp")
+	outputName := "world-out"
+	if len(os.Args) > 3 {
+		outputName = os.Args[2]
+	}
 	os.RemoveAll(outputName)
 
-	worldPaths, err := glob("Hive-MC-Archive/Maps/", ".mcworld")
+	worldPaths, err := glob(inputFolder, ".mcworld")
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -380,6 +378,11 @@ func main() {
 
 	// center root
 	root.offsetFromParent = root.offsetFromParent.Sub(root.BoundsTotal().Div(2))
+
+	err = writeGroupToJSON(root, "map.json")
+	if err != nil {
+		logrus.Fatal(err)
+	}
 
 	logrus.Info("Generating Output World")
 	{ // output world
@@ -407,11 +410,6 @@ func main() {
 		if err != nil {
 			logrus.Fatal(err)
 		}
-	}
-
-	err = writeGroupToJSON(root, "map.json")
-	if err != nil {
-		logrus.Fatal(err)
 	}
 
 	logrus.Infof("%d chunks", countChunks)

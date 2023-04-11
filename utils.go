@@ -45,7 +45,7 @@ func UnpackZip(filename, unpackFolder string, filteFn func(string) bool) error {
 func ZipFolder(filename, folder string) error {
 	f, err := os.Create(filename)
 	if err != nil {
-		logrus.Fatal(err)
+		return err
 	}
 	zw := zip.NewWriter(f)
 

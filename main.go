@@ -19,6 +19,8 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+const padding = 80
+
 var sem = semaphore.NewWeighted(30)
 
 type layoutItem interface {
@@ -374,7 +376,7 @@ func main() {
 
 	logrus.Info("Laying Out")
 	root := &mapGroup{groups: worldGroups}
-	layoutGroup(root, ChunkPos{}, 0)
+	layoutGroup(root, ChunkPos{}, padding)
 
 	// center root
 	root.offsetFromParent = root.offsetFromParent.Sub(root.BoundsTotal().Div(2))
